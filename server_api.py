@@ -48,6 +48,11 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("acr-api")
 
+# httpx מתעד כל URL מלא ברמת INFO. מכיוון שספקים מסוימים מקבלים מפתח
+# בשורת השאילתה, זה עלול לכתוב סודות ללוג. משתיקים לרמת אזהרה.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 app = FastAPI(
     title="ACR Transcribe API",
     version="1.0.0",
@@ -201,13 +206,23 @@ async def download_to(url: str, dst: Path, drive_token: str = "") -> Path:
 GEMINI_BASE = "https://generativelanguage.googleapis.com"
 
 
+def gemini_auth() -> dict:
+    """
+    המפתח נשלח בכותרת ולא ב-?key= בשורת השאילתה.
+    בשורת השאילתה הוא היה נכתב לכל לוג גישה — של השרת, של הפרוקסי,
+    ושל כל שירות תיעוד באמצע.
+    """
+    return {"x-goog-api-key": GEMINI_API_KEY}
+
+
 async def _gemini_upload(path: Path) -> str:
     """העלאת קובץ ל-Files API של Gemini (חינם, נשמר 48 שעות)."""
     size = path.stat().st_size
     async with httpx.AsyncClient(timeout=600) as c:
         start = await c.post(
-            f"{GEMINI_BASE}/upload/v1beta/files?key={GEMINI_API_KEY}",
+            f"{GEMINI_BASE}/upload/v1beta/files",
             headers={
+                **gemini_auth(),
                 "X-Goog-Upload-Protocol": "resumable",
                 "X-Goog-Upload-Command": "start",
                 "X-Goog-Upload-Header-Content-Length": str(size),
@@ -241,7 +256,7 @@ async def _gemini_upload(path: Path) -> str:
             if info.get("state") == "ACTIVE":
                 return uri
             await asyncio.sleep(1.5)
-            st = await c.get(f"{GEMINI_BASE}/v1beta/{name}?key={GEMINI_API_KEY}")
+            st = await c.get(f"{GEMINI_BASE}/v1beta/{name}", headers=gemini_auth())
             info = st.json()
         raise HTTPException(504, "Gemini file stayed in PROCESSING state")
 
@@ -301,7 +316,8 @@ async def transcribe_gemini(path: Path, language: str, prompt: str = "") -> dict
 
     async with httpx.AsyncClient(timeout=900) as c:
         r = await c.post(
-            f"{GEMINI_BASE}/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
+            f"{GEMINI_BASE}/v1beta/models/{GEMINI_MODEL}:generateContent",
+            headers=gemini_auth(),
             json=body,
         )
     if r.status_code >= 400:
