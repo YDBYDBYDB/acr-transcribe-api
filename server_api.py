@@ -292,9 +292,12 @@ async def transcribe_gemini(path: Path, language: str, prompt: str = "") -> dict
         }],
         "generationConfig": {
             "temperature": 0,
-            # בלי זה ברירת המחדל חותכת את התשובה באמצע מחרוזת,
-            # וה-JSON חוזר פגום. זה היה הגורם ל-"Unterminated string".
-            "maxOutputTokens": 65536,
+            # gemini-3.5-flash מריץ "חשיבה" ברמת medium כברירת מחדל.
+            # תמלול הוא מעתוק מכני — החשיבה רק שורפת זמן ותקציב פלט,
+            # ובפועל גרמה לקטעים שחזרו כמעט ריקים ולבקשות שנתקעו לדקות.
+            "thinkingConfig": {"thinkingLevel": "minimal"},
+            # בלי תקרה מפורשת התשובה נחתכת באמצע מחרוזת וה-JSON פגום.
+            "maxOutputTokens": 32768,
             "response_mime_type": "application/json",
             "response_schema": {
                 "type": "OBJECT",
