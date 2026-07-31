@@ -206,6 +206,27 @@ async def download_to(url: str, dst: Path, drive_token: str = "") -> Path:
 # ----------------------------------------------------------------------------
 # מנועי תמלול
 # ----------------------------------------------------------------------------
+def clip_for_groq(prompt: str) -> str:
+    """
+    Groq סופר את שדה ה-prompt ב**בייטים**, לא בתווים.
+    אות עברית היא 2 בייטים ב-UTF-8, ולכן חיתוך לפי תווים עדיין חורג:
+    895 תווים עבריים הם כ-1,563 בייטים.
+
+    חותכים לפי בייטים, מיישרים לגבול תו תקין, ואז לגבול מילה.
+    """
+    s = prompt.strip()
+    raw = s.encode("utf-8")
+    if len(raw) <= GROQ_PROMPT_MAX:
+        return s
+
+    # decode עם ignore מסיר תו רב-בייטי שנחתך באמצע
+    cut = raw[:GROQ_PROMPT_MAX].decode("utf-8", errors="ignore")
+    sp = cut.rfind(" ")
+    if sp > len(cut) // 2:
+        cut = cut[:sp]
+    return cut.strip()
+
+
 GEMINI_BASE = "https://generativelanguage.googleapis.com"
 
 
@@ -388,15 +409,11 @@ async def transcribe_groq(path: Path, language: str, prompt: str = "") -> dict:
             if language and language != "auto":
                 data["language"] = language
             if prompt:
-                # Groq מגביל את שדה ה-prompt ל-896 תווים ומחזיר 400 מעבר לזה.
-                # חותכים בגבול מילה במקום להיכשל על הרמז בלבד.
-                clipped = prompt.strip()
-                if len(clipped) > GROQ_PROMPT_MAX:
-                    cut = clipped[:GROQ_PROMPT_MAX]
-                    sp = cut.rfind(" ")
-                    clipped = cut[:sp] if sp > GROQ_PROMPT_MAX // 2 else cut
-                    log.warning("Prompt clipped for Groq: %d -> %d chars",
-                                len(prompt), len(clipped))
+                clipped = clip_for_groq(prompt)
+                if clipped != prompt.strip():
+                    log.warning("Prompt clipped for Groq: %d -> %d bytes",
+                                len(prompt.encode("utf-8")),
+                                len(clipped.encode("utf-8")))
                 data["prompt"] = clipped
             r = await client.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
