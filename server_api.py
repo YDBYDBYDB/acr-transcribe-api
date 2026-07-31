@@ -38,7 +38,8 @@ GROQ_MODEL       = os.getenv("GROQ_MODEL", "whisper-large-v3-turbo")
 LOCAL_MODEL      = os.getenv("LOCAL_MODEL", "small")         # tiny/base/small/medium
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "he")
 MP3_BITRATE      = os.getenv("MP3_BITRATE", "24k")           # 24k = מרווח איכות מעל AMR-NB (12.8k)
-GEMINI_CHUNK_MIN = int(os.getenv("GEMINI_CHUNK_MIN", "15"))  # פיצול שיחות ארוכות (מגבלת טוקני פלט)
+# 10 דקות לקטע: קטע של 15 דקות הפיק ~8,300 תווים והתקרב לתקרת הפלט.
+GEMINI_CHUNK_MIN = int(os.getenv("GEMINI_CHUNK_MIN", "10"))
 MAX_UPLOAD_MB    = int(os.getenv("MAX_UPLOAD_MB", "200"))
 KEEP_MP3_MINUTES = int(os.getenv("KEEP_MP3_MINUTES", "60"))  # כמה זמן לשמור MP3 להורדה
 DATA_DIR         = Path(os.getenv("DATA_DIR", tempfile.gettempdir())) / "acr_api"
@@ -291,6 +292,9 @@ async def transcribe_gemini(path: Path, language: str, prompt: str = "") -> dict
         }],
         "generationConfig": {
             "temperature": 0,
+            # בלי זה ברירת המחדל חותכת את התשובה באמצע מחרוזת,
+            # וה-JSON חוזר פגום. זה היה הגורם ל-"Unterminated string".
+            "maxOutputTokens": 65536,
             "response_mime_type": "application/json",
             "response_schema": {
                 "type": "OBJECT",
@@ -325,11 +329,37 @@ async def transcribe_gemini(path: Path, language: str, prompt: str = "") -> dict
         raise HTTPException(502, f"Gemini error {r.status_code}: {r.text[:500]}")
 
     import json as _json
+
     try:
-        raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        parsed = _json.loads(raw)
+        cand = r.json()["candidates"][0]
+        raw = cand["content"]["parts"][0]["text"]
     except Exception as e:
-        raise HTTPException(502, f"Could not parse Gemini response: {e}")
+        raise HTTPException(502, f"Unexpected Gemini response shape: {e}")
+
+    finish = cand.get("finishReason", "")
+
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        # התשובה נחתכה בתקרת הפלט. במקום לאבד את כל הקטע,
+        # מחלצים את כל הרשומות השלמות שכן הספיקו לחזור.
+        salvaged = []
+        for m in re.finditer(r"\{[^{}]*\}", raw):
+            try:
+                o = _json.loads(m.group(0))
+                if isinstance(o, dict) and "text" in o:
+                    salvaged.append(o)
+            except Exception:
+                continue
+        if not salvaged:
+            raise HTTPException(
+                502,
+                f"Could not parse Gemini response (finishReason={finish}, "
+                f"{len(raw)} chars). Try lowering GEMINI_CHUNK_MIN.",
+            )
+        log.warning("Truncated response (finishReason=%s) — salvaged %d segments",
+                    finish, len(salvaged))
+        parsed = {"language": language, "segments": salvaged}
 
     segs = [
         {"start": round(float(s.get("start") or 0), 2),
