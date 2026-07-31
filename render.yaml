@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: acr-transcribe
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DEFAULT_LANGUAGE
+        value: he
+      - key: MP3_BITRATE
+        value: 24k
+      - key: GEMINI_CHUNK_MIN
+        value: "15"
+      - key: DATA_DIR
+        value: /tmp
+      - key: API_KEY
+        sync: false      # מוגדר ידנית בלוח הבקרה
+      - key: GEMINI_API_KEY
+        sync: false
