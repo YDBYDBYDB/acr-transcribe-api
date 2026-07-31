@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field
 # ----------------------------------------------------------------------------
 API_KEY          = os.getenv("API_KEY", "")                  # מפתח לאבטחת ה-API. ריק = פתוח
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")           # מפתח מ-Google AI Studio (חינם)
-GEMINI_MODEL     = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# gemini-2.5-flash חסום למפתחות חדשים ("no longer available to new users").
+GEMINI_MODEL     = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")             # https://console.groq.com  (חינם)
 GROQ_MODEL       = os.getenv("GROQ_MODEL", "whisper-large-v3-turbo")
 LOCAL_MODEL      = os.getenv("LOCAL_MODEL", "small")         # tiny/base/small/medium
@@ -699,7 +700,9 @@ async def startup():
     if not shutil.which("ffmpeg"):
         log.error("ffmpeg NOT FOUND — conversion will fail")
     asyncio.create_task(cleaner())
-    log.info("Ready. Engine=%s", "groq" if GROQ_API_KEY else "local faster-whisper")
+    engine = pick_engine("auto")
+    log.info("Ready. Engine=%s%s", engine,
+             f" ({GEMINI_MODEL})" if engine == "gemini" else "")
 
 
 if __name__ == "__main__":
