@@ -540,6 +540,7 @@ def root():
         "endpoints": {
             "POST /transcribe": "multipart file upload -> transcript (sync)",
             "POST /transcribe-url": "JSON {url} (Drive/HTTP) -> transcript (sync)",
+            "POST /jobs/upload": "multipart file upload -> async job id (USE THIS for long calls)",
             "POST /jobs": "JSON {url, callback_url} -> async job id",
             "GET  /jobs/{id}": "async job status/result",
             "POST /convert": "multipart file upload -> MP3 only",
@@ -652,6 +653,69 @@ async def create_job(req: JobRequest, bg: BackgroundTasks, x_api_key: Optional[s
     job_id = uuid.uuid4().hex[:16]
     JOBS[job_id] = {"job_id": job_id, "status": "queued"}
     bg.add_task(_run_job, job_id, req)
+    return {"job_id": job_id, "status": "queued", "poll": f"/jobs/{job_id}"}
+
+
+async def _run_upload_job(job_id: str, src: Path, language: str, engine: str,
+                          prompt: str, want_mp3: bool, want_segments: bool,
+                          callback_url: str):
+    try:
+        JOBS[job_id]["status"] = "processing"
+        JOBS[job_id] = await process(src, job_id, language, engine,
+                                     prompt, want_mp3, want_segments)
+    except Exception as e:
+        log.exception("upload job %s failed", job_id)
+        JOBS[job_id] = {"job_id": job_id, "status": "error", "error": str(e)}
+    finally:
+        src.unlink(missing_ok=True)
+
+    if callback_url:
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                await c.post(callback_url, json=JOBS[job_id])
+        except Exception as e:
+            log.warning("callback failed: %s", e)
+
+
+@app.post("/jobs/upload", status_code=202)
+async def create_upload_job(
+    bg: BackgroundTasks,
+    file: UploadFile = File(...),
+    language: str = Form(DEFAULT_LANGUAGE),
+    engine: str = Form("auto"),
+    prompt: str = Form(""),
+    return_mp3: bool = Form(False),
+    return_segments: bool = Form(True),
+    callback_url: str = Form(""),
+    x_api_key: Optional[str] = Header(None),
+):
+    """
+    כמו /transcribe אבל אסינכרוני: מעלים קובץ, מקבלים job_id מיד.
+
+    זו הדרך הנכונה לשיחות ארוכות. שיחה של 48 דקות לוקחת ~7 דקות עיבוד,
+    והפרוקסי שלפני השרת חותך בקשות ארוכות — כך שקריאה סינכרונית
+    תמיד תיכשל ותגרום ללולאת ניסיונות חוזרים ששורפת מכסה.
+    """
+    check_key(x_api_key)
+    job_id = uuid.uuid4().hex[:16]
+    suffix = Path(file.filename or "audio.acr").suffix or ".acr"
+    src = DATA_DIR / f"{job_id}_src{suffix}"
+
+    size = 0
+    with open(src, "wb") as f:
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_UPLOAD_MB * 1024 * 1024:
+                src.unlink(missing_ok=True)
+                raise HTTPException(413, f"File exceeds {MAX_UPLOAD_MB}MB")
+            f.write(chunk)
+
+    JOBS[job_id] = {"job_id": job_id, "status": "queued"}
+    bg.add_task(_run_upload_job, job_id, src, language, engine,
+                prompt, return_mp3, return_segments, callback_url)
     return {"job_id": job_id, "status": "queued", "poll": f"/jobs/{job_id}"}
 
 
