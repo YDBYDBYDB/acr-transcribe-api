@@ -444,9 +444,23 @@ def transcribe_local(path: Path, language: str) -> dict:
 
 
 def pick_engine(engine: str) -> str:
-    """auto -> gemini אם יש מפתח, אחרת groq, אחרת מקומי."""
+    """
+    auto -> DEFAULT_ENGINE אם הוגדר ויש לו מפתח, אחרת gemini, אחרת groq.
+
+    DEFAULT_ENGINE קיים כדי לאפשר מעבר ל-Groq בלי למחוק את מפתח Gemini,
+    כך שהוא נשאר זמין כגיבוי בהעברת engine מפורש בבקשה.
+    """
     if engine != "auto":
         return engine
+
+    preferred = os.getenv("DEFAULT_ENGINE", "").strip().lower()
+    if preferred == "groq" and GROQ_API_KEY:
+        return "groq"
+    if preferred == "gemini" and GEMINI_API_KEY:
+        return "gemini"
+    if preferred == "local":
+        return "local"
+
     if GEMINI_API_KEY:
         return "gemini"
     if GROQ_API_KEY:
