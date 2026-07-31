@@ -35,6 +35,7 @@ GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")           # מפתח מ-Googl
 GEMINI_MODEL     = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")             # https://console.groq.com  (חינם)
 GROQ_MODEL       = os.getenv("GROQ_MODEL", "whisper-large-v3-turbo")
+GROQ_PROMPT_MAX  = 896   # מגבלה קשיחה של Groq על שדה ה-prompt
 LOCAL_MODEL      = os.getenv("LOCAL_MODEL", "small")         # tiny/base/small/medium
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "he")
 MP3_BITRATE      = os.getenv("MP3_BITRATE", "24k")           # 24k = מרווח איכות מעל AMR-NB (12.8k)
@@ -387,7 +388,16 @@ async def transcribe_groq(path: Path, language: str, prompt: str = "") -> dict:
             if language and language != "auto":
                 data["language"] = language
             if prompt:
-                data["prompt"] = prompt
+                # Groq מגביל את שדה ה-prompt ל-896 תווים ומחזיר 400 מעבר לזה.
+                # חותכים בגבול מילה במקום להיכשל על הרמז בלבד.
+                clipped = prompt.strip()
+                if len(clipped) > GROQ_PROMPT_MAX:
+                    cut = clipped[:GROQ_PROMPT_MAX]
+                    sp = cut.rfind(" ")
+                    clipped = cut[:sp] if sp > GROQ_PROMPT_MAX // 2 else cut
+                    log.warning("Prompt clipped for Groq: %d -> %d chars",
+                                len(prompt), len(clipped))
+                data["prompt"] = clipped
             r = await client.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
